@@ -32,12 +32,12 @@ summary(nfl_data$score1)
 ##Data Cleansing##
 
 #To clean our data, we want to first eliminate the columns detailing quarterback data as this will not be included
-#in our analysis. We can do this by dropping columns with missing values.
+#in our analysis. We redeclare the dataset using only the non-QB column names.
 nfl_data = nfl_data[,c('date','season','neutral','playoff','team1','team2','elo1_pre',
                        'elo2_pre','elo_prob1','elo_prob2','elo1_post','elo2_post',
                        'score1','score2')]
 
-##Adding New Variables: score difference (margin), winning team(winning_team), 
+##Adding New Variables: score difference (margin), winning team(winning_team), pre-game elo difference
 nfl_data$score_margin = nfl_data$score1-nfl_data$score2 #positive margin is team1 winning, negative is team2 winning
 
 nfl_data$winning_team = nfl_data$score_margin #recode copy of score_margin to winning team
@@ -49,24 +49,30 @@ plot(team_name, xlab='nth most common team', ylab='games played')
 #Make a variable tracking which row is which, useful for sorting by date later.
 nfl_data$row_num = 1:length(nfl_data$date)
 
-#remove teams playing fewer than 20 games
-#this is implemented by making a summary of team1, subsetting only >25, and using row names to subset the nfl_elo dataframe
+#remove games including teams playing fewer than 50 total games
+#this is implemented by making a summary of team1, subsetting only >50, and using row names to subset the nfl_elo dataframe
+#We want to do this because teams that only play a few games may not have enough games played
+#to properly calibrate their elo (all teams start at 1300 Elo)
 
 team_sizes1 = summary(nfl_data$team1) 
 team_sizes1.df = data.frame(team_sizes1)
 team_sizes1.df.big = subset(team_sizes1.df, team_sizes1>50)
 
+#repeat the process for games with minor teams as team2.
 team_sizes2 = summary(nfl_data$team2)
 team_sizes2.df = data.frame(team_sizes2)
 team_sizes2.df.big = subset(team_sizes2.df, team_sizes2>50)
 
 nfl_data.big = subset(nfl_data, team1 %in% row.names(team_sizes1.df.big) 
                       & team2 %in% row.names(team_sizes2.df.big), select = colnames(nfl_data))
+print('we removed this many games involving teams which had short NFL tenures:')
+print(length(nfl_data[,1])-length(nfl_data.big[,1]))
 
-plot(nfl_data$elo_difference_pre, nfl_data$score_margin) #elo generally correlates with margin but variance is high
+
 
 summary(nfl_data.big$team1)
-summary(nfl_data$team1)
+summary(nfl_data$team1) #The summaries show the number of teams playing a small number of games which
+                        #now are not included in our dataset.
 
 
 ## Winning Streak Analysis
@@ -137,24 +143,52 @@ generate_streaks= function(team_set){
   }
   return(team_set)
 }
-chicago.bears = generate_streaks(chicago.bears)
-plot(chicago.bears$streak,chicago.bears$score_margin)
 
+chicago.bears = generate_streaks(team_subset(nfl_data.big, 'CHI'))
 lm1 = lm(score_margin ~ streak, data = chicago.bears)
-summary(lm1) #linear regression of score margin (y) vs. winning streak (x) for CHI Bears
+print('the regression between Chicago Bears margin of victory and winning streak, see R squared value.')
+summary(lm1)  #this is a linear regression of win streak and margin of next game, for 
+              #Chicago Bears. This is plotted in the data visualization section as well.
 
-nyg = team_subset(nfl_data, 'NYG') #linear regression using NY Giants
-nyg = generate_streaks(nyg)
-lm2 = lm(streak_pre ~ streak, data = nyg)
-summary(lm2)
-summary(nyg$score2)
+ny.giants = generate_streaks(team_subset(nfl_data.big, 'NYG')) #streak data for NYG
+lm2  =lm(score_margin ~ streak, data= ny.giants)
+print('the regression between NY Giants margin of victory and winning streak, see R squared value.')
+summary(lm2)  #this is an regression of margin vs. streak for another team, NY Giants.
+              #It also shows an insignificant R squared value.
 
-lm3 = lm(score_margin ~ elo_prob1, nfl_data)
-summary(lm3) #model to analyze effect of winning prediction on score margin
+chicago.bears.wins = subset(chicago.bears, streak>1) #what if we only look at bona-fide winning streaks?
+lm3 = lm(score_margin ~ streak, data = chicago.bears.wins)
+print('the regression between Chicago Bears margin of victory and winning streak for games which streak > 1')
+print('Pay special note to the insignificant R squared value.')
+summary(lm3)  #this is a linear regression of win streak and margin of next game, for 
+#Chicago Bears. This is plotted in the data visualization section as well.
+
+cb = subset(chicago.bears, streak >0) #just games where streak is positive for ease of implementation
+cb.win.count= c(0,0,0,0,0,0,0,0,0)   #chicago bears wins counter by streak
+cb.loss.count = c(0,0,0,0,0,0,0,0,0)    #chicago bears loss counter by streak
+cb.elo_prob.count = c(0,0,0,0,0,0,0,0,0)#chicago bears sum of elo probability
+
+for(i in 1:9){
+  s = cb$streak[i]
+  if(cb$score_margin[i] > 0){cb.win.count[s] = cb.win.count[s] +1}
+  else if (cb$score_margin[i] < 0){cb.loss.count[s] = cb.loss.count[s] + 1}
+  
+  if(cb$score_margin[i] != 0) {cb.elo_prob.count[s] = cb.elo_prob.count[s] + cb$elo_prob1[i]}
+}
+
+cb_sum = data.frame(1:9, cb.win.count, cb.loss.count, cb.elo_prob.count)
+names(cb_sum) = c('streak', 'wins', 'losses', 'elo_prob_sum')
+cb_sum$win_rate = cb_sum$wins/(cb_sum$wins + cb_sum$losses)
+cb_sum$pred_win_rate = cb_sum$elo_prob_sum/(cb_sum$wins + cb_sum$losses)
+write.table(cb_sum, file = 'streak_win_rate.csv',row.names = F, sep = ",")
+print('')
+
+lm4 = lm(score_margin ~ elo_prob1, nfl_data)
+summary(lm4) #model to analyze effect of winning prediction on score margin
 
 
-lm4 = lm(elo_prob1 ~ elo_difference_pre, nfl_data)
-summary(lm4) #the R squared value of only 0.9858 shows that there is some
+lm5 = lm(elo_prob1 ~ elo_difference_pre, nfl_data)
+summary(lm5) #the R squared value of only 0.9858 shows that there is some
 #adjustments made to predict the winner, such as home team advantage or QB effects
 
 
@@ -188,3 +222,45 @@ hist(nfl_data$elo1_pre) # hist. for scores in original dataset
 
 
 plot(team_name, xlab='nth most common team', ylab='games played') # Plot of elo
+
+
+plot(nfl_data$elo_difference_pre, nfl_data$score_margin, cex=0.3, pch=16,
+     xlab= 'elo difference entering game', ylab = 'score margin',
+     main = 'Figure 3- Elo Difference and Match Results', cex.main = 1.0) 
+#elo generally correlates with margin but variance is high
+lm6 = lm(nfl_data.big$score_margin ~ nfl_data.big$elo_difference_pre)
+#lm6 is a linear regression between elo difference between two teams and the score margin of game
+abline(lm6, lwd= 2)
+summary(lm6)
+
+## WARNING- THIS CODE IS YET TO BE FINISHED##
+plot(nfl_data$elo1_pre, nfl_data$score2, cex=0.3, pch=16,
+     xlab= 'elo difference entering game', ylab = 'score margin',
+     main = 'Figure 3- Elo Difference and Match Results', cex.main = 1.0) 
+#elo generally correlates with margin but variance is high
+lm6 = lm(nfl_data.big$score2 ~ nfl_data.big$elo1_pre)
+#lm6 is a linear regression between elo difference between two teams and the score margin of game
+abline(lm6, lwd= 2)
+summary(lm6)
+
+
+
+
+##END WORK IN PROGRESS ZONE##
+
+#lm1 plot- Chicago Bears winning streak. NOTE: insignifant R^2 of this regression
+plot(chicago.bears$streak,chicago.bears$score_margin, pch=16, cex=0.5, cex.main = 1.0, 
+     xlab = '# consecutive games won', ylab = 'margin of victory',
+     main="Figure 1- Chicago Bears Streak Fallacy"); grid();
+abline(lm(score_margin ~ streak, data = chicago.bears))
+
+#lm3 plot- Chicago Bears winning streak regression for only streak > 1 
+#NOTE: insignifant R^2 of this regression
+plot(chicago.bears.wins$streak, chicago.bears.wins$score_margin, pch = 16, cex=0.5, cex.main = 1.0,
+     xlab = '# consecutive games won', ylab='margin of victory',
+     main='Figure 2- Chicago Bears Streak Fallacy')
+abline(lm3)
+
+lm1 = lm(score_margin ~ streak, data = chicago.bears)
+summary(lm1) #linear model for best fit line in Figure 
+
